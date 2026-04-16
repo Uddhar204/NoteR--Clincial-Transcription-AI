@@ -6,6 +6,9 @@ const COLLECTION_NAME = "consultations";
 const VECTOR_SIZE = 384; // matches the embedding size we'll use
 
 let client: QdrantClient | null = null;
+// Cache the collection-ready state — avoids a Qdrant network round-trip
+// on every memory read/write after the first successful ensure.
+let collectionReady = false;
 
 export function getQdrantClient(): QdrantClient | null {
   if (client) return client;
@@ -27,6 +30,9 @@ export function getQdrantClient(): QdrantClient | null {
 }
 
 export async function ensureCollection(): Promise<boolean> {
+  // Short-circuit: skip the Qdrant round-trip if we already know it's ready.
+  if (collectionReady) return true;
+
   const qdrant = getQdrantClient();
   if (!qdrant) return false;
 
@@ -46,6 +52,7 @@ export async function ensureCollection(): Promise<boolean> {
       console.log(`Created collection: ${COLLECTION_NAME}`);
     }
 
+    collectionReady = true;
     return true;
   } catch (error) {
     console.error("Failed to ensure Qdrant collection:", error);

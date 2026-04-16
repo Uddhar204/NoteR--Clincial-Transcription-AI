@@ -1,5 +1,9 @@
 // API route for generating clinical notes from transcript via Google Gemini
 
+// Next.js route segment config — tells the runtime this is a slow async route.
+export const dynamic = "force-dynamic";
+export const maxDuration = 30; // seconds
+
 import { NextRequest, NextResponse } from "next/server";
 import { generateClinicalReport } from "@/lib/llm-client";
 

@@ -1,5 +1,9 @@
 // API route for translation via Google Gemini
 
+// Next.js route segment config
+export const dynamic = "force-dynamic";
+export const maxDuration = 30; // seconds
+
 import { NextRequest, NextResponse } from "next/server";
 import { translateText } from "@/lib/llm-client";
 

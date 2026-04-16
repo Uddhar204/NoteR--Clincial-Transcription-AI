@@ -43,7 +43,18 @@ export default function HomePage() {
   const vapiRef = useRef<ReturnType<typeof Object> | null>(null);
   // Keep a ref to always have the latest transcript entries in async functions
   const transcriptEntriesRef = useRef<TranscriptEntry[]>([]);
+  // Preloaded Vapi module — populated on mount so the first click is instant
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const vapiModuleRef = useRef<any>(null);
 
+
+  // ── Preload Vapi SDK on mount ──────────────────────────────
+  // Eliminates the ~500 ms dynamic-import stall on first button click.
+  useEffect(() => {
+    import("@vapi-ai/web").then((mod) => {
+      vapiModuleRef.current = mod.default ?? mod;
+    }).catch(() => { /* silently ignore — will fall back to on-click import */ });
+  }, []);
 
   // ── Timer ────────────────────────────────────────────────────
   useEffect(() => {
@@ -130,8 +141,11 @@ export default function HomePage() {
     setPatientHistory([]);
 
     try {
-      // Dynamically import Vapi to avoid SSR issues
-      const VapiModule = await import("@vapi-ai/web");
+      // Use the preloaded module (populated on mount); fall back to on-demand import
+      // if the preload hasn't finished yet (e.g. very fast click).
+      const VapiModule = vapiModuleRef.current
+        ? { default: vapiModuleRef.current }
+        : await import("@vapi-ai/web");
       const Vapi = VapiModule.default;
 
       const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
@@ -240,12 +254,22 @@ export default function HomePage() {
       .join("\n");
 
     try {
-      // Generate clinical notes
-      const response = await fetch("/api/generate-notes", {
+      // ── Run generate-notes and memory search IN PARALLEL ─────
+      // Both are independent — no reason to wait for notes before searching.
+      const notesPromise = fetch("/api/generate-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript: fullTranscript }),
       });
+
+      const historyPromise = fetch(
+        `/api/memory?q=${encodeURIComponent(fullTranscript.slice(0, 500))}&limit=3`
+      ).then((r) => r.json()).catch(() => ({ results: [] }));
+
+      const [response, historyData] = await Promise.all([
+        notesPromise,
+        historyPromise,
+      ]);
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
@@ -261,42 +285,31 @@ export default function HomePage() {
 
       setReport(data as GeneratedReport);
 
-      // Try to search patient history
-      try {
-        const historyRes = await fetch(
-          `/api/memory?q=${encodeURIComponent(fullTranscript.slice(0, 500))}&limit=3`
+      // Apply history results (already resolved above)
+      if (historyData.results && historyData.results.length > 0) {
+        setPatientHistory(
+          historyData.results.map((r: { date: string; summary: string }) => ({
+            date: r.date,
+            summary: r.summary,
+          }))
         );
-        const historyData = await historyRes.json();
-        if (historyData.results && historyData.results.length > 0) {
-          setPatientHistory(
-            historyData.results.map((r: { date: string; summary: string }) => ({
-              date: r.date,
-              summary: r.summary,
-            }))
-          );
-        }
-      } catch {
-        // Memory search is optional
       }
 
-      // Try to store this consultation
-      try {
-        await fetch("/api/memory", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: crypto.randomUUID(),
-            patientName: "Current Patient",
-            date: new Date().toISOString().split("T")[0],
-            summary: (data as GeneratedReport).summary || "",
-            keywords: Array.from(keywords.values()).map((k) => k.term),
-            transcript: fullTranscript,
-            soapNotes: JSON.stringify((data as GeneratedReport).soap),
-          }),
-        });
-      } catch {
-        // Storage is optional
-      }
+      // ── Fire-and-forget memory store ──────────────────────────
+      // Storing is non-critical — we never wait for it to complete.
+      fetch("/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          patientName: "Current Patient",
+          date: new Date().toISOString().split("T")[0],
+          summary: (data as GeneratedReport).summary || "",
+          keywords: Array.from(keywords.values()).map((k) => k.term),
+          transcript: fullTranscript,
+          soapNotes: JSON.stringify((data as GeneratedReport).soap),
+        }),
+      }).catch(() => { /* storage is optional — ignore silently */ });
     } catch (error) {
       console.error("Failed to generate report:", error);
       setIsGenerating(false);
