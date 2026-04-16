@@ -1,10 +1,10 @@
 // LLM client using KodeKloud's OpenAI-compatible API
 // Base URL: https://api.ai.kodekloud.com/v1
-// Model: google/gemini-2.0-flash (switched from 3.1-pro for ~5x lower latency)
+// Model: google/gemini-3-flash-preview
 
 import OpenAI from "openai";
 
-const MODEL = "google/gemini-2.0-flash";
+const MODEL = "google/gemini-3-flash-preview";
 const BASE_URL = "https://api.ai.kodekloud.com/v1";
 
 // ── Singleton client ────────────────────────────────────────────
