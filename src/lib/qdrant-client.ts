@@ -67,7 +67,8 @@ export interface ConsultationRecord {
   summary: string;
   keywords: string[];
   transcript: string;
-  soapNotes: string;
+  soapNotes: string;       // JSON string of SOAPNotes
+  prescriptions: string;   // JSON string of PrescriptionItem[]
 }
 
 // Simple text-to-vector using character frequency (for demo purposes)
@@ -120,6 +121,8 @@ export async function storeConsultation(
             summary: record.summary,
             keywords: record.keywords,
             soapNotes: record.soapNotes,
+            prescriptions: record.prescriptions,
+            transcript: record.transcript,
           },
         },
       ],
@@ -133,11 +136,14 @@ export async function storeConsultation(
 }
 
 export interface SearchResult {
+  id: string;
   patientName: string;
   date: string;
   summary: string;
   keywords: string[];
-  score: number;
+  soapNotes: string;
+  prescriptions: string;
+  score?: number;
 }
 
 export async function searchPatientHistory(
@@ -159,14 +165,57 @@ export async function searchPatientHistory(
     });
 
     return results.map((r) => ({
+      id: String(r.id),
       patientName: (r.payload?.patientName as string) || "Unknown",
       date: (r.payload?.date as string) || "",
       summary: (r.payload?.summary as string) || "",
       keywords: (r.payload?.keywords as string[]) || [],
+      soapNotes: (r.payload?.soapNotes as string) || "{}",
+      prescriptions: (r.payload?.prescriptions as string) || "[]",
       score: r.score,
     }));
   } catch (error) {
     console.error("Failed to search patient history:", error);
     return [];
+  }
+}
+
+// Fetch all consultations using Qdrant scroll API (no vector needed)
+export async function getAllConsultations(
+  limit: number = 50,
+  offset?: string | number | null
+): Promise<{ records: SearchResult[]; nextOffset: string | number | null }> {
+  const qdrant = getQdrantClient();
+  if (!qdrant) return { records: [], nextOffset: null };
+
+  try {
+    await ensureCollection();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scrollArgs: any = { limit, with_payload: true };
+    if (offset != null) scrollArgs.offset = offset;
+
+    const result = await qdrant.scroll(COLLECTION_NAME, scrollArgs);
+
+    const records: SearchResult[] = (result.points || []).map((p) => ({
+      id: String(p.id),
+      patientName: (p.payload?.patientName as string) || "Unknown",
+      date: (p.payload?.date as string) || "",
+      summary: (p.payload?.summary as string) || "",
+      keywords: (p.payload?.keywords as string[]) || [],
+      soapNotes: (p.payload?.soapNotes as string) || "{}",
+      prescriptions: (p.payload?.prescriptions as string) || "[]",
+    }));
+
+    // Sort newest first
+    records.sort((a, b) => (b.date > a.date ? 1 : -1));
+
+    return {
+      records,
+      nextOffset: (result.next_page_offset as string | number | null) ?? null,
+    };
+  } catch (error) {
+    console.error("Failed to scroll consultations:", error);
+    return { records: [], nextOffset: null };
   }
 }

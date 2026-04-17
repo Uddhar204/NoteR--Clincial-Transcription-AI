@@ -1,190 +1,335 @@
-// PDF export utility using jsPDF + html2canvas
+// High-quality PDF export using browser print CSS
+// Replaces html2canvas/jsPDF screenshot approach with real vector text
 
-import html2canvas from "html2canvas";
-import jsPDF from "jspdf";
+import type { GeneratedReport } from "@/lib/llm-client";
 
-export async function exportToPDF(
-  elementId: string,
-  filename: string = "notER-report.pdf"
-): Promise<void> {
-  const element = document.getElementById(elementId);
-  if (!element) {
-    console.error(`Element with id "${elementId}" not found`);
-    return;
-  }
+export function exportToPDF(report: GeneratedReport, patientName?: string): void {
+  const date = new Date().toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const filename = `notER-report-${Date.now()}.pdf`;
 
-  try {
-    const canvas = await html2canvas(element, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      backgroundColor: "#ffffff",
-      logging: false,
-    });
+  const prescriptionRows = report.prescriptions
+    .map(
+      (rx, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="drug">${rx.drug}</td>
+        <td>${rx.dosage}</td>
+        <td>${rx.frequency}</td>
+        <td>${rx.duration}</td>
+      </tr>`
+    )
+    .join("");
 
-    const imgData = canvas.toDataURL("image/png");
-    const pdf = new jsPDF("p", "mm", "a4");
+  const noPrescriptions =
+    report.prescriptions.length === 0
+      ? `<p class="empty">No prescriptions were explicitly mentioned during this consultation.</p>`
+      : "";
 
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 10;
-    const usableWidth = pageWidth - 2 * margin;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Clinical Report — notER</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-    const imgWidth = usableWidth;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    let heightLeft = imgHeight;
-    let position = margin;
-
-    // First page
-    pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight - 2 * margin;
-
-    // Additional pages if content overflows
-    while (heightLeft > 0) {
-      position = -(pageHeight - 2 * margin - heightLeft + margin);
-      pdf.addPage();
-      pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight - 2 * margin;
+    @page {
+      size: A4;
+      margin: 18mm 18mm 22mm 18mm;
     }
 
-    pdf.save(filename);
-  } catch (error) {
-    console.error("PDF export failed:", error);
-    throw error;
-  }
-}
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-export function printPrescription(elementId: string): void {
-  const element = document.getElementById(elementId);
-  if (!element) return;
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 11pt;
+      color: #1a1a2e;
+      line-height: 1.6;
+      background: #fff;
+    }
+
+    /* ── Header ─────────────────────────── */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2.5px solid #E11D48;
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+    }
+    .header-left h1 {
+      font-size: 22pt;
+      font-weight: 700;
+      color: #E11D48;
+      letter-spacing: -0.5px;
+    }
+    .header-left p {
+      font-size: 9pt;
+      color: #666;
+      margin-top: 2px;
+    }
+    .header-right {
+      text-align: right;
+      font-size: 9pt;
+      color: #555;
+      line-height: 1.8;
+    }
+    .header-right strong { color: #1a1a2e; font-size: 10pt; }
+
+    /* ── Summary banner ────────────────── */
+    .summary-box {
+      background: #fef2f2;
+      border-left: 4px solid #E11D48;
+      padding: 10px 14px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      font-size: 10pt;
+    }
+    .summary-box strong { color: #E11D48; }
+
+    /* ── Section title ─────────────────── */
+    .section-title {
+      font-size: 11pt;
+      font-weight: 700;
+      color: #1a1a2e;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-bottom: 1.5px solid #e5e7eb;
+      padding-bottom: 5px;
+      margin-bottom: 14px;
+      margin-top: 22px;
+    }
+
+    /* ── SOAP Notes ────────────────────── */
+    .soap-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 6px;
+    }
+    .soap-item {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 10px 14px;
+    }
+    .soap-label {
+      font-size: 9pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 5px;
+    }
+    .soap-item:nth-child(1) .soap-label { color: #2563EB; }
+    .soap-item:nth-child(2) .soap-label { color: #059669; }
+    .soap-item:nth-child(3) .soap-label { color: #D97706; }
+    .soap-item:nth-child(4) .soap-label { color: #7C3AED; }
+    .soap-content { font-size: 10pt; color: #374151; line-height: 1.55; }
+
+    /* ── Prescription ──────────────────── */
+    .rx-symbol {
+      font-family: serif;
+      font-size: 24pt;
+      color: #E11D48;
+      display: inline-block;
+      margin-bottom: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10pt;
+      margin-top: 8px;
+    }
+    thead tr { background: #1a1a2e; }
+    th {
+      padding: 8px 12px;
+      text-align: left;
+      color: #fff;
+      font-size: 8.5pt;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+    td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+    td.drug { font-weight: 600; color: #1a1a2e; }
+    td.num { color: #E11D48; font-weight: 700; width: 30px; }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) { background: #f9fafb; }
+    .empty { font-size: 10pt; color: #6b7280; font-style: italic; padding: 8px 0; }
+
+    /* ── Footer ────────────────────────── */
+    .footer {
+      margin-top: 30px;
+      padding-top: 14px;
+      border-top: 1.5px solid #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .footer-note { font-size: 8pt; color: #9ca3af; }
+    .signature { text-align: right; }
+    .signature-line {
+      width: 180px;
+      border-top: 1px solid #374151;
+      margin-top: 36px;
+      padding-top: 6px;
+      font-size: 9pt;
+      color: #555;
+    }
+
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>notER</h1>
+      <p>AI Clinical Copilot — Cardiology</p>
+    </div>
+    <div class="header-right">
+      <strong>Clinical Report</strong><br/>
+      Patient: ${patientName ?? "Current Patient"}<br/>
+      Date: ${date}<br/>
+      Generated: ${new Date().toLocaleTimeString("en-IN")}
+    </div>
+  </div>
+
+  <div class="summary-box">
+    <strong>Summary:</strong> ${report.summary}
+  </div>
+
+  <div class="section-title">🧾 Clinical Notes (SOAP)</div>
+  <div class="soap-grid">
+    <div class="soap-item">
+      <div class="soap-label">S — Subjective</div>
+      <div class="soap-content">${report.soap.subjective}</div>
+    </div>
+    <div class="soap-item">
+      <div class="soap-label">O — Objective</div>
+      <div class="soap-content">${report.soap.objective}</div>
+    </div>
+    <div class="soap-item">
+      <div class="soap-label">A — Assessment</div>
+      <div class="soap-content">${report.soap.assessment}</div>
+    </div>
+    <div class="soap-item">
+      <div class="soap-label">P — Plan</div>
+      <div class="soap-content">${report.soap.plan}</div>
+    </div>
+  </div>
+
+  <div class="section-title">💊 Prescription</div>
+  <div class="rx-symbol">℞</div>
+  ${
+    report.prescriptions.length > 0
+      ? `<table>
+    <thead>
+      <tr>
+        <th>#</th><th>Drug</th><th>Dosage</th><th>Frequency</th><th>Duration</th>
+      </tr>
+    </thead>
+    <tbody>${prescriptionRows}</tbody>
+  </table>`
+      : noPrescriptions
+  }
+
+  <div class="footer">
+    <div class="footer-note">Generated by notER — AI Clinical Copilot<br/>${new Date().toISOString()}</div>
+    <div class="signature">
+      <div class="signature-line">Doctor's Signature</div>
+    </div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      document.title = "${filename}";
+      window.print();
+    }
+  </script>
+</body>
+</html>`;
 
   const printWindow = window.open("", "_blank");
-  if (!printWindow) return;
-
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Prescription — notER</title>
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        body {
-          font-family: 'Inter', sans-serif;
-          padding: 20mm;
-          color: #1a1a1a;
-          max-width: 210mm;
-          margin: 0 auto;
-        }
-        
-        .rx-header {
-          text-align: center;
-          border-bottom: 3px double #1E40AF;
-          padding-bottom: 16px;
-          margin-bottom: 16px;
-        }
-        
-        .rx-header h1 {
-          font-size: 22px;
-          color: #1E40AF;
-          margin-bottom: 4px;
-        }
-        
-        .rx-header p {
-          font-size: 12px;
-          color: #666;
-        }
-        
-        .rx-patient {
-          display: flex;
-          justify-content: space-between;
-          padding: 12px 0;
-          border-bottom: 1px solid #ddd;
-          margin-bottom: 16px;
-          font-size: 14px;
-        }
-        
-        .rx-symbol {
-          font-family: serif;
-          font-size: 32px;
-          font-weight: bold;
-          color: #1E40AF;
-          margin-bottom: 12px;
-        }
-        
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          margin-top: 8px;
-        }
-        
-        th {
-          background: #f0f4ff;
-          padding: 10px 12px;
-          text-align: left;
-          font-size: 11px;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          border-bottom: 2px solid #1E40AF;
-          color: #333;
-        }
-        
-        td {
-          padding: 10px 12px;
-          border-bottom: 1px solid #eee;
-          font-size: 14px;
-        }
-        
-        td:first-child {
-          font-weight: 600;
-          color: #1E40AF;
-        }
-        
-        .rx-footer {
-          margin-top: 40px;
-          display: flex;
-          justify-content: space-between;
-          border-top: 1px solid #ddd;
-          padding-top: 20px;
-        }
-        
-        .rx-signature {
-          text-align: right;
-        }
-        
-        .rx-signature-line {
-          width: 200px;
-          border-top: 1px solid #333;
-          margin-top: 40px;
-          padding-top: 8px;
-          font-size: 12px;
-          color: #666;
-        }
-        
-        @media print {
-          body { padding: 15mm; }
-        }
-      </style>
-    </head>
-    <body>
-      ${element.innerHTML}
-      <div class="rx-footer">
-        <div>
-          <p style="font-size:11px;color:#999;">Generated by notER — AI Clinical Copilot</p>
-        </div>
-        <div class="rx-signature">
-          <div class="rx-signature-line">Doctor's Signature</div>
-        </div>
-      </div>
-      <script>
-        window.onload = function() { window.print(); window.close(); }
-      <\/script>
-    </body>
-    </html>
-  `);
-
+  if (!printWindow) {
+    alert("Please allow popups to download the PDF.");
+    return;
+  }
+  printWindow.document.write(html);
   printWindow.document.close();
+}
+
+export function printPrescription(report: GeneratedReport): void {
+  const date = new Date().toLocaleDateString("en-IN");
+
+  const prescriptionRows = report.prescriptions
+    .map(
+      (rx, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="drug">${rx.drug}</td>
+        <td>${rx.dosage}</td>
+        <td>${rx.frequency}</td>
+        <td>${rx.duration}</td>
+      </tr>`
+    )
+    .join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Prescription — notER</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    @page { size: A5; margin: 15mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; color: #1a1a2e; font-size: 10pt; }
+    .rx-header { text-align: center; border-bottom: 3px double #E11D48; padding-bottom: 12px; margin-bottom: 14px; }
+    .rx-header h1 { font-size: 18pt; color: #E11D48; font-weight: 700; }
+    .rx-header p { font-size: 9pt; color: #666; margin-top: 3px; }
+    .meta { display:flex; justify-content:space-between; font-size:9pt; padding:8px 0; border-bottom:1px solid #ddd; margin-bottom:12px; }
+    .rx-symbol { font-family:serif; font-size:28pt; color:#E11D48; margin-bottom:8px; }
+    table { width:100%; border-collapse:collapse; font-size:9.5pt; }
+    th { background:#1a1a2e; color:#fff; padding:7px 10px; text-align:left; font-size:8pt; text-transform:uppercase; }
+    td { padding:8px 10px; border-bottom:1px solid #eee; }
+    td:first-child { color:#E11D48; font-weight:700; width:25px; }
+    td.drug { font-weight:600; }
+    .sig-line { margin-top:35px; display:flex; justify-content:flex-end; }
+    .sig { width:160px; border-top:1px solid #333; padding-top:5px; font-size:8pt; color:#666; text-align:center; }
+    .footer { margin-top:20px; font-size:7.5pt; color:#aaa; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="rx-header">
+    <h1>notER</h1>
+    <p>AI Clinical Copilot — Cardiology</p>
+  </div>
+  <div class="meta">
+    <span><strong>Patient:</strong> [Patient Name]</span>
+    <span><strong>Date:</strong> ${date}</span>
+  </div>
+  <div class="rx-symbol">℞</div>
+  <table>
+    <thead><tr><th>#</th><th>Drug</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead>
+    <tbody>${prescriptionRows}</tbody>
+  </table>
+  <div class="sig-line"><div class="sig">Doctor's Signature</div></div>
+  <div class="footer">Generated by notER &mdash; AI Clinical Copilot</div>
+  <script>window.onload=function(){window.print();}<\/script>
+</body>
+</html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
 }

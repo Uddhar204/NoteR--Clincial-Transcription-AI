@@ -30,13 +30,14 @@ interface TranscriptEntry {
 // ── Main Page Component ────────────────────────────────────────
 export default function HomePage() {
   const [status, setStatus] = useState<ConsultationStatus>("idle");
+  const [patientName, setPatientName] = useState("");
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([]);
   const [keywords, setKeywords] = useState<Map<string, DetectedKeyword>>(new Map());
   const [report, setReport] = useState<GeneratedReport | null>(null);
   const [timer, setTimer] = useState(0);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [patientHistory, setPatientHistory] = useState<Array<{ date: string; summary: string }>>([]);
+  const [patientHistory, setPatientHistory] = useState<Array<{ date: string; summary: string }>>([]); 
 
   const feedRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -302,12 +303,13 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: crypto.randomUUID(),
-          patientName: "Current Patient",
+          patientName: patientName.trim() || "Unknown Patient",
           date: new Date().toISOString().split("T")[0],
           summary: (data as GeneratedReport).summary || "",
           keywords: Array.from(keywords.values()).map((k) => k.term),
           transcript: fullTranscript,
           soapNotes: JSON.stringify((data as GeneratedReport).soap),
+          prescriptions: JSON.stringify((data as GeneratedReport).prescriptions),
         }),
       }).catch(() => { /* storage is optional — ignore silently */ });
     } catch (error) {
@@ -325,7 +327,9 @@ export default function HomePage() {
   // ── New Consultation ─────────────────────────────────────────
   const newConsultation = () => {
     setStatus("idle");
+    setPatientName("");
     setTranscriptEntries([]);
+    transcriptEntriesRef.current = [];
     setKeywords(new Map());
     setReport(null);
     setTimer(0);
@@ -341,14 +345,16 @@ export default function HomePage() {
 
   // ── Export PDF ──────────────────────────────────────────────
   const handleExportPDF = async () => {
+    if (!report) return;
     const { exportToPDF } = await import("@/lib/pdf-export");
-    await exportToPDF("report-content", "notER-clinical-report.pdf");
+    exportToPDF(report, patientName.trim() || "Unknown Patient");
   };
 
   // ── Print Prescription ──────────────────────────────────────
   const handlePrint = async () => {
+    if (!report) return;
     const { printPrescription } = await import("@/lib/pdf-export");
-    printPrescription("prescription-printable");
+    printPrescription(report);
   };
 
   // ── Group keywords by category ──────────────────────────────
@@ -379,6 +385,22 @@ export default function HomePage() {
             <div className="header__connection-dot" />
             System Ready
           </div>
+          <a
+            href="/dashboard"
+            style={{
+              padding: "6px 14px",
+              background: "rgba(225, 29, 72, 0.15)",
+              border: "1px solid rgba(225, 29, 72, 0.3)",
+              borderRadius: "8px",
+              color: "#fca5a5",
+              fontSize: "12px",
+              fontWeight: 600,
+              textDecoration: "none",
+              letterSpacing: "0.02em",
+            }}
+          >
+            📋 Dashboard
+          </a>
         </div>
       </header>
 
@@ -388,7 +410,12 @@ export default function HomePage() {
           <button
             className="control-bar__btn control-bar__btn--start"
             onClick={startConsultation}
-            disabled={status === "listening" || status === "processing"}
+            disabled={
+              status === "listening" ||
+              status === "processing" ||
+              patientName.trim() === ""
+            }
+            title={patientName.trim() === "" ? "Enter patient name first" : "Start consultation"}
             id="btn-start"
           >
             🎙️ Start Consultation
@@ -423,9 +450,60 @@ export default function HomePage() {
             <div className="idle-state__icon">🫀</div>
             <div className="idle-state__title">Ready for Consultation</div>
             <div className="idle-state__subtitle">
-              Click &quot;Start Consultation&quot; to begin recording the
-              doctor-patient conversation. notER will transcribe, analyze, and
-              generate structured clinical notes in real-time.
+              Enter the patient&apos;s name, then click &quot;Start Consultation&quot; to begin
+              recording. notER will transcribe, analyze, and generate structured
+              clinical notes in real-time.
+            </div>
+            {/* Patient name input */}
+            <div style={{
+              marginTop: 24,
+              width: "100%",
+              maxWidth: 420,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}>
+              <label
+                htmlFor="patient-name-input"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--text-secondary)",
+                  textAlign: "left",
+                }}
+              >
+                👤 Patient Name <span style={{ color: "var(--accent)" }}>*</span>
+              </label>
+              <input
+                id="patient-name-input"
+                type="text"
+                placeholder="e.g. Rahul Sharma"
+                value={patientName}
+                onChange={(e) => setPatientName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && patientName.trim()) startConsultation();
+                }}
+                autoComplete="off"
+                style={{
+                  padding: "12px 16px",
+                  background: "var(--surface)",
+                  border: "1.5px solid var(--border)",
+                  borderRadius: 10,
+                  color: "var(--text-primary)",
+                  fontSize: 15,
+                  outline: "none",
+                  width: "100%",
+                  transition: "border-color 0.2s",
+                  fontFamily: "inherit",
+                }}
+                onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+                onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+              />
+              {patientName.trim() === "" && (
+                <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: 0 }}>
+                  Required before starting the consultation
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -582,6 +660,35 @@ export default function HomePage() {
         {/* Final Report View */}
         {status === "completed" && report && (
           <div className="report-view" id="report-content">
+            {/* Patient + Date header */}
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 16,
+              padding: "12px 16px",
+              background: "var(--surface)",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>👤</span>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
+                    {patientName || "Unknown Patient"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+                    {new Date().toLocaleDateString("en-IN", { year: "numeric", month: "long", day: "numeric" })}
+                  </div>
+                </div>
+              </div>
+              <span style={{
+                fontSize: 11, fontWeight: 600, padding: "4px 10px",
+                background: "rgba(52,211,153,0.1)",
+                border: "1px solid rgba(52,211,153,0.2)",
+                borderRadius: 6, color: "#34d399",
+              }}>✅ Completed</span>
+            </div>
             {/* Summary */}
             <div className="report-summary">
               <span className="report-summary__icon">📝</span>
