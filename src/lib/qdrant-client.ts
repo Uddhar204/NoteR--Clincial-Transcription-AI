@@ -1,6 +1,7 @@
 // Qdrant vector database client for patient consultation memory
 
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { encrypt, decrypt, safeDecrypt } from "./encryption";
 
 const COLLECTION_NAME = "consultations";
 const VECTOR_SIZE = 384; // matches the embedding size we'll use
@@ -105,10 +106,12 @@ export async function storeConsultation(
   try {
     await ensureCollection();
 
+    // Generate vector from PLAINTEXT (search must work on real content)
     const vector = textToVector(
       `${record.summary} ${record.keywords.join(" ")} ${record.transcript}`
     );
 
+    // Encrypt sensitive fields before storing in Qdrant
     await qdrant.upsert(COLLECTION_NAME, {
       wait: true,
       points: [
@@ -116,13 +119,14 @@ export async function storeConsultation(
           id: record.id,
           vector,
           payload: {
-            patientName: record.patientName,
-            date: record.date,
-            summary: record.summary,
-            keywords: record.keywords,
-            soapNotes: record.soapNotes,
-            prescriptions: record.prescriptions,
-            transcript: record.transcript,
+            patientName:   encrypt(record.patientName),
+            date:          record.date,  // keep date unencrypted for sorting
+            summary:       encrypt(record.summary),
+            keywords:      encrypt(JSON.stringify(record.keywords)),
+            soapNotes:     encrypt(record.soapNotes),
+            prescriptions: encrypt(record.prescriptions),
+            transcript:    encrypt(record.transcript),
+            _encrypted:    true,  // flag for migration compatibility
           },
         },
       ],
@@ -164,16 +168,29 @@ export async function searchPatientHistory(
       with_payload: true,
     });
 
-    return results.map((r) => ({
-      id: String(r.id),
-      patientName: (r.payload?.patientName as string) || "Unknown",
-      date: (r.payload?.date as string) || "",
-      summary: (r.payload?.summary as string) || "",
-      keywords: (r.payload?.keywords as string[]) || [],
-      soapNotes: (r.payload?.soapNotes as string) || "{}",
-      prescriptions: (r.payload?.prescriptions as string) || "[]",
-      score: r.score,
-    }));
+    return results.map((r) => {
+      const isEncrypted = r.payload?._encrypted === true;
+      return {
+        id: String(r.id),
+        patientName: isEncrypted
+          ? (safeDecrypt(r.payload?.patientName as string) ?? "Unknown")
+          : (r.payload?.patientName as string) || "Unknown",
+        date: (r.payload?.date as string) || "",
+        summary: isEncrypted
+          ? (safeDecrypt(r.payload?.summary as string) ?? "")
+          : (r.payload?.summary as string) || "",
+        keywords: isEncrypted
+          ? JSON.parse(safeDecrypt(r.payload?.keywords as string) ?? "[]")
+          : (r.payload?.keywords as string[]) || [],
+        soapNotes: isEncrypted
+          ? (safeDecrypt(r.payload?.soapNotes as string) ?? "{}")
+          : (r.payload?.soapNotes as string) || "{}",
+        prescriptions: isEncrypted
+          ? (safeDecrypt(r.payload?.prescriptions as string) ?? "[]")
+          : (r.payload?.prescriptions as string) || "[]",
+        score: r.score,
+      };
+    });
   } catch (error) {
     console.error("Failed to search patient history:", error);
     return [];
@@ -197,15 +214,28 @@ export async function getAllConsultations(
 
     const result = await qdrant.scroll(COLLECTION_NAME, scrollArgs);
 
-    const records: SearchResult[] = (result.points || []).map((p) => ({
-      id: String(p.id),
-      patientName: (p.payload?.patientName as string) || "Unknown",
-      date: (p.payload?.date as string) || "",
-      summary: (p.payload?.summary as string) || "",
-      keywords: (p.payload?.keywords as string[]) || [],
-      soapNotes: (p.payload?.soapNotes as string) || "{}",
-      prescriptions: (p.payload?.prescriptions as string) || "[]",
-    }));
+    const records: SearchResult[] = (result.points || []).map((p) => {
+      const isEncrypted = p.payload?._encrypted === true;
+      return {
+        id: String(p.id),
+        patientName: isEncrypted
+          ? (safeDecrypt(p.payload?.patientName as string) ?? "Unknown")
+          : (p.payload?.patientName as string) || "Unknown",
+        date: (p.payload?.date as string) || "",
+        summary: isEncrypted
+          ? (safeDecrypt(p.payload?.summary as string) ?? "")
+          : (p.payload?.summary as string) || "",
+        keywords: isEncrypted
+          ? JSON.parse(safeDecrypt(p.payload?.keywords as string) ?? "[]")
+          : (p.payload?.keywords as string[]) || [],
+        soapNotes: isEncrypted
+          ? (safeDecrypt(p.payload?.soapNotes as string) ?? "{}")
+          : (p.payload?.soapNotes as string) || "{}",
+        prescriptions: isEncrypted
+          ? (safeDecrypt(p.payload?.prescriptions as string) ?? "[]")
+          : (p.payload?.prescriptions as string) || "[]",
+      };
+    });
 
     // Sort newest first
     records.sort((a, b) => (b.date > a.date ? 1 : -1));

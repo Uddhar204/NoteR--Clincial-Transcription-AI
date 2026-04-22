@@ -2,9 +2,10 @@
 // Pattern: short-lived access token (15 min) + long-lived refresh token (7 days)
 // Both stored as HttpOnly cookies — XSS-proof, CSRF-protected via SameSite=lax
 import "server-only";
-import { SignJWT, jwtVerify } from "jose";
+import { EncryptJWT, jwtDecrypt } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { createHash } from "crypto";
 
 // ── Constants ──────────────────────────────────────────────────
 const ACCESS_TTL_MS  = 15 * 60 * 1000;        // 15 minutes
@@ -14,9 +15,12 @@ const ACCESS_COOKIE  = "noter_access";
 const REFRESH_COOKIE = "noter_refresh";
 
 // ── Key helpers ────────────────────────────────────────────────
+// JWE with dir+A256GCM requires exactly 32 bytes (256 bits).
+// SHA-256 hash the secret to guarantee the correct length.
 function getKey(secret: string | undefined, name: string): Uint8Array {
   if (!secret) throw new Error(`${name} is not set in environment`);
-  return new TextEncoder().encode(secret);
+  const hash = createHash("sha256").update(secret).digest();
+  return new Uint8Array(hash);
 }
 
 function accessKey()  { return getKey(process.env.SESSION_SECRET,         "SESSION_SECRET"); }
@@ -34,33 +38,33 @@ export interface RefreshPayload {
   type:      "refresh";
 }
 
-// ── Encrypt / Decrypt ──────────────────────────────────────────
-async function signAccess(payload: AccessPayload): Promise<string> {
-  return new SignJWT({ ...payload })
-    .setProtectedHeader({ alg: "HS256" })
+// ── Encrypt / Decrypt (JWE — payload is ciphertext, not just signed) ──
+async function encryptAccess(payload: AccessPayload): Promise<string> {
+  return new EncryptJWT({ ...payload })
+    .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt()
     .setExpirationTime("15m")
-    .sign(accessKey());
+    .encrypt(accessKey());
 }
 
-async function signRefresh(payload: RefreshPayload): Promise<string> {
-  return new SignJWT({ ...payload })
-    .setProtectedHeader({ alg: "HS256" })
+async function encryptRefresh(payload: RefreshPayload): Promise<string> {
+  return new EncryptJWT({ ...payload })
+    .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt()
     .setExpirationTime("7d")
-    .sign(refreshKey());
+    .encrypt(refreshKey());
 }
 
 export async function decryptAccess(token: string): Promise<AccessPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, accessKey(), { algorithms: ["HS256"] });
+    const { payload } = await jwtDecrypt(token, accessKey());
     return payload as unknown as AccessPayload;
   } catch { return null; }
 }
 
 export async function decryptRefresh(token: string): Promise<RefreshPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, refreshKey(), { algorithms: ["HS256"] });
+    const { payload } = await jwtDecrypt(token, refreshKey());
     const p = payload as unknown as RefreshPayload;
     if (p.type !== "refresh") return null;
     return p;
@@ -72,11 +76,11 @@ export async function createSession(email: string): Promise<void> {
   const now = Date.now();
 
   const [accessToken, refreshToken] = await Promise.all([
-    signAccess({
+    encryptAccess({
       email,
       expiresAt: new Date(now + ACCESS_TTL_MS).toISOString(),
     }),
-    signRefresh({
+    encryptRefresh({
       email,
       expiresAt: new Date(now + REFRESH_TTL_MS).toISOString(),
       type: "refresh",
@@ -115,7 +119,7 @@ export async function refreshSession(): Promise<boolean> {
   if (!payload) return false;
 
   // Issue new access token
-  const newAccess = await signAccess({
+  const newAccess = await encryptAccess({
     email: payload.email,
     expiresAt: new Date(Date.now() + ACCESS_TTL_MS).toISOString(),
   });

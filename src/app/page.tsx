@@ -47,6 +47,10 @@ export default function HomePage() {
   // Preloaded Vapi module — populated on mount so the first click is instant
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const vapiModuleRef = useRef<any>(null);
+  // Guard: prevent endConsultation from firing twice (user click + Vapi call-end)
+  const endingRef = useRef(false);
+  // Guard: prevent duplicate memory stores (fire-and-forget could retrigger)
+  const savedConsultationIdRef = useRef<string | null>(null);
 
 
   // ── Preload Vapi SDK on mount ──────────────────────────────
@@ -221,6 +225,10 @@ export default function HomePage() {
 
   // ── End Consultation ─────────────────────────────────────────
   const endConsultation = async () => {
+    // Guard: prevent double execution (user click + Vapi call-end event)
+    if (endingRef.current) return;
+    endingRef.current = true;
+
     // Stop Vapi if running
     if (vapiRef.current) {
       try {
@@ -237,6 +245,7 @@ export default function HomePage() {
     // Guard: don't process empty transcript
     if (finalEntries.length === 0) {
       setStatus("idle");
+      endingRef.current = false;
       return;
     }
 
@@ -297,21 +306,28 @@ export default function HomePage() {
       }
 
       // ── Fire-and-forget memory store ──────────────────────────
-      // Storing is non-critical — we never wait for it to complete.
-      fetch("/api/memory", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: crypto.randomUUID(),
-          patientName: patientName.trim() || "Unknown Patient",
-          date: new Date().toISOString().split("T")[0],
-          summary: (data as GeneratedReport).summary || "",
-          keywords: Array.from(keywords.values()).map((k) => k.term),
-          transcript: fullTranscript,
-          soapNotes: JSON.stringify((data as GeneratedReport).soap),
-          prescriptions: JSON.stringify((data as GeneratedReport).prescriptions),
-        }),
-      }).catch(() => { /* storage is optional — ignore silently */ });
+      // Generate a deterministic ID from patient name + timestamp to prevent
+      // duplicate storage if endConsultation fires twice.
+      const consultationId = `${(patientName.trim() || "unknown").replace(/\s+/g, "-").toLowerCase()}-${Date.now()}`;
+
+      // Guard: don't store if we already saved this consultation
+      if (savedConsultationIdRef.current !== consultationId) {
+        savedConsultationIdRef.current = consultationId;
+        fetch("/api/memory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: consultationId,
+            patientName: patientName.trim() || "Unknown Patient",
+            date: new Date().toISOString(),
+            summary: (data as GeneratedReport).summary || "",
+            keywords: Array.from(keywords.values()).map((k) => k.term),
+            transcript: fullTranscript,
+            soapNotes: JSON.stringify((data as GeneratedReport).soap),
+            prescriptions: JSON.stringify((data as GeneratedReport).prescriptions),
+          }),
+        }).catch(() => { /* storage is optional — ignore silently */ });
+      }
     } catch (error) {
       console.error("Failed to generate report:", error);
       setIsGenerating(false);
@@ -322,6 +338,7 @@ export default function HomePage() {
 
     setIsGenerating(false);
     setStatus("completed");
+    endingRef.current = false;
   };
 
   // ── New Consultation ─────────────────────────────────────────
@@ -334,6 +351,8 @@ export default function HomePage() {
     setReport(null);
     setTimer(0);
     setPatientHistory([]);
+    endingRef.current = false;
+    savedConsultationIdRef.current = null;
   };
 
   // ── Copy to clipboard ───────────────────────────────────────

@@ -29,16 +29,28 @@ export default function DashboardClient({ records, doctorEmail }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
+  // Deduplicate records that share the same patient+date+summary fingerprint.
+  // This cleans up any historical duplicates already stored in Qdrant.
+  const uniqueRecords = useMemo(() => {
+    const seen = new Set<string>();
+    return records.filter((r) => {
+      const fingerprint = `${r.patientName}|${r.date?.slice(0, 10)}|${r.summary?.slice(0, 80)}`;
+      if (seen.has(fingerprint)) return false;
+      seen.add(fingerprint);
+      return true;
+    });
+  }, [records]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    if (!q) return records;
-    return records.filter(
+    if (!q) return uniqueRecords;
+    return uniqueRecords.filter(
       (r) =>
         r.patientName.toLowerCase().includes(q) ||
         r.summary.toLowerCase().includes(q) ||
         r.keywords.some((k) => k.toLowerCase().includes(q))
     );
-  }, [search, records]);
+  }, [search, uniqueRecords]);
 
   function parseSOAP(raw: string): SOAPNotes | null {
     try { return JSON.parse(raw); } catch { return null; }
@@ -57,6 +69,175 @@ export default function DashboardClient({ records, doctorEmail }: Props) {
         year: "numeric", month: "short", day: "numeric",
       });
     } catch { return iso; }
+  }
+
+  function formatDateLong(iso: string) {
+    try {
+      return new Date(iso).toLocaleDateString("en-IN", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+    } catch { return iso; }
+  }
+
+  // ── Reprint: Full Clinical Report ─────────────────────────────
+  function reprintReport(record: SearchResult) {
+    const soap = parseSOAP(record.soapNotes);
+    const prescriptions = parsePrescriptions(record.prescriptions);
+    const date = formatDateLong(record.date);
+    const time = (() => { try { return new Date(record.date).toLocaleTimeString("en-IN"); } catch { return ""; } })();
+
+    const rxRows = prescriptions.map((rx, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="drug">${rx.drug}</td>
+        <td>${rx.dosage}</td>
+        <td>${rx.frequency}</td>
+        <td>${rx.duration}</td>
+      </tr>`).join("");
+
+    const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" />
+<title>Clinical Report — ${record.patientName} — notER</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  @page { size: A4; margin: 18mm 18mm 22mm 18mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; font-size: 11pt; color: #1a1a2e; line-height: 1.6; background: #fff; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2.5px solid #E11D48; padding-bottom:12px; margin-bottom:18px; }
+  .header-left h1 { font-size:22pt; font-weight:700; color:#E11D48; letter-spacing:-0.5px; }
+  .header-left p { font-size:9pt; color:#666; margin-top:2px; }
+  .header-right { text-align:right; font-size:9pt; color:#555; line-height:1.8; }
+  .header-right strong { color:#1a1a2e; font-size:10pt; }
+  .reprint-badge { display:inline-block; background:#fef2f2; color:#E11D48; font-size:8pt; font-weight:700; padding:2px 8px; border-radius:3px; border:1px solid #fecdd3; margin-top:4px; }
+  .summary-box { background:#fef2f2; border-left:4px solid #E11D48; padding:10px 14px; border-radius:4px; margin-bottom:20px; font-size:10pt; }
+  .summary-box strong { color:#E11D48; }
+  .section-title { font-size:11pt; font-weight:700; color:#1a1a2e; text-transform:uppercase; letter-spacing:0.08em; border-bottom:1.5px solid #e5e7eb; padding-bottom:5px; margin-bottom:14px; margin-top:22px; }
+  .soap-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:6px; }
+  .soap-item { background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 14px; }
+  .soap-label { font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:5px; }
+  .soap-item:nth-child(1) .soap-label { color:#2563EB; }
+  .soap-item:nth-child(2) .soap-label { color:#059669; }
+  .soap-item:nth-child(3) .soap-label { color:#D97706; }
+  .soap-item:nth-child(4) .soap-label { color:#7C3AED; }
+  .soap-content { font-size:10pt; color:#374151; line-height:1.55; }
+  .rx-symbol { font-family:serif; font-size:24pt; color:#E11D48; display:inline-block; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; font-size:10pt; margin-top:8px; }
+  thead tr { background:#1a1a2e; }
+  th { padding:8px 12px; text-align:left; color:#fff; font-size:8.5pt; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; }
+  td { padding:9px 12px; border-bottom:1px solid #e5e7eb; vertical-align:top; }
+  td.drug { font-weight:600; color:#1a1a2e; } td.num { color:#E11D48; font-weight:700; width:30px; }
+  tr:last-child td { border-bottom:none; } tr:nth-child(even) { background:#f9fafb; }
+  .empty { font-size:10pt; color:#6b7280; font-style:italic; padding:8px 0; }
+  .footer { margin-top:30px; padding-top:14px; border-top:1.5px solid #e5e7eb; display:flex; justify-content:space-between; align-items:flex-end; }
+  .footer-note { font-size:8pt; color:#9ca3af; }
+  .signature { text-align:right; }
+  .signature-line { width:180px; border-top:1px solid #374151; margin-top:36px; padding-top:6px; font-size:9pt; color:#555; }
+  @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+</style></head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>notER</h1>
+      <p>AI Clinical Copilot — Cardiology</p>
+    </div>
+    <div class="header-right">
+      <strong>Clinical Report</strong><br/>
+      Patient: ${record.patientName || "Unknown"}<br/>
+      Date: ${date}<br/>
+      <span class="reprint-badge">📋 REPRINT</span>
+    </div>
+  </div>
+  <div class="summary-box"><strong>Summary:</strong> ${record.summary || "No summary available"}</div>
+  <div class="section-title">🧾 Clinical Notes (SOAP)</div>
+  <div class="soap-grid">
+    <div class="soap-item"><div class="soap-label">S — Subjective</div><div class="soap-content">${soap?.subjective || "Not recorded"}</div></div>
+    <div class="soap-item"><div class="soap-label">O — Objective</div><div class="soap-content">${soap?.objective || "Not recorded"}</div></div>
+    <div class="soap-item"><div class="soap-label">A — Assessment</div><div class="soap-content">${soap?.assessment || "Not recorded"}</div></div>
+    <div class="soap-item"><div class="soap-label">P — Plan</div><div class="soap-content">${soap?.plan || "Not recorded"}</div></div>
+  </div>
+  <div class="section-title">💊 Prescription</div>
+  <div class="rx-symbol">℞</div>
+  ${prescriptions.length > 0
+    ? `<table><thead><tr><th>#</th><th>Drug</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead><tbody>${rxRows}</tbody></table>`
+    : `<p class="empty">No prescriptions were recorded for this consultation.</p>`}
+  <div class="footer">
+    <div class="footer-note">Reprinted from notER — AI Clinical Copilot<br/>Original: ${date} ${time}<br/>Reprinted: ${new Date().toLocaleString("en-IN")}</div>
+    <div class="signature"><div class="signature-line">Doctor's Signature</div></div>
+  </div>
+  <script>window.onload=function(){document.title="notER-reprint-${record.id}.pdf";window.print();}<\/script>
+</body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { alert("Please allow popups to print the report."); return; }
+    w.document.write(html);
+    w.document.close();
+  }
+
+  // ── Reprint: Prescription Only ─────────────────────────────────
+  function reprintPrescription(record: SearchResult) {
+    const prescriptions = parsePrescriptions(record.prescriptions);
+    if (prescriptions.length === 0) {
+      alert("No prescriptions found for this consultation.");
+      return;
+    }
+    const date = formatDateLong(record.date);
+
+    const rxRows = prescriptions.map((rx, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="drug">${rx.drug}</td>
+        <td>${rx.dosage}</td>
+        <td>${rx.frequency}</td>
+        <td>${rx.duration}</td>
+      </tr>`).join("");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Prescription — ${record.patientName} — notER</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  @page { size: A5; margin: 15mm; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',sans-serif; color:#1a1a2e; font-size:10pt; }
+  .rx-header { text-align:center; border-bottom:3px double #E11D48; padding-bottom:12px; margin-bottom:14px; }
+  .rx-header h1 { font-size:18pt; color:#E11D48; font-weight:700; }
+  .rx-header p { font-size:9pt; color:#666; margin-top:3px; }
+  .reprint-badge { display:inline-block; background:#fef2f2; color:#E11D48; font-size:7.5pt; font-weight:700; padding:2px 7px; border-radius:3px; border:1px solid #fecdd3; margin-top:6px; }
+  .meta { display:flex; justify-content:space-between; font-size:9pt; padding:8px 0; border-bottom:1px solid #ddd; margin-bottom:12px; }
+  .rx-symbol { font-family:serif; font-size:28pt; color:#E11D48; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; font-size:9.5pt; }
+  th { background:#1a1a2e; color:#fff; padding:7px 10px; text-align:left; font-size:8pt; text-transform:uppercase; }
+  td { padding:8px 10px; border-bottom:1px solid #eee; }
+  td:first-child { color:#E11D48; font-weight:700; width:25px; }
+  td.drug { font-weight:600; }
+  .sig-line { margin-top:35px; display:flex; justify-content:flex-end; }
+  .sig { width:160px; border-top:1px solid #333; padding-top:5px; font-size:8pt; color:#666; text-align:center; }
+  .footer { margin-top:20px; font-size:7.5pt; color:#aaa; text-align:center; }
+  @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+</style></head>
+<body>
+  <div class="rx-header">
+    <h1>notER</h1>
+    <p>AI Clinical Copilot — Cardiology</p>
+    <span class="reprint-badge">📋 REPRINT</span>
+  </div>
+  <div class="meta">
+    <span><strong>Patient:</strong> ${record.patientName || "Unknown"}</span>
+    <span><strong>Date:</strong> ${date}</span>
+  </div>
+  <div class="rx-symbol">℞</div>
+  <table>
+    <thead><tr><th>#</th><th>Drug</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead>
+    <tbody>${rxRows}</tbody>
+  </table>
+  <div class="sig-line"><div class="sig">Doctor's Signature</div></div>
+  <div class="footer">Reprinted from notER — AI Clinical Copilot &mdash; Original: ${date}</div>
+  <script>window.onload=function(){window.print();}<\/script>
+</body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { alert("Please allow popups to print the prescription."); return; }
+    w.document.write(html);
+    w.document.close();
   }
 
   const thisMonth = new Date().toISOString().slice(0, 7);
@@ -116,9 +297,9 @@ export default function DashboardClient({ records, doctorEmail }: Props) {
           gap: 16, marginBottom: 32,
         }}>
           {[
-            { label: "Total Consultations", value: records.length, icon: "📋", color: "var(--accent)" },
+            { label: "Total Consultations", value: uniqueRecords.length, icon: "📋", color: "var(--accent)" },
             { label: "Patients This Month",
-              value: records.filter(r => (r.date || "").startsWith(thisMonth)).length,
+              value: uniqueRecords.filter(r => (r.date || "").startsWith(thisMonth)).length,
               icon: "📅", color: "var(--info)" },
             { label: "Search Results", value: filtered.length, icon: "🔍", color: "var(--success)" },
           ].map((s) => (
@@ -180,13 +361,13 @@ export default function DashboardClient({ records, doctorEmail }: Props) {
         {filtered.length === 0 ? (
           <div className="card" style={{ textAlign: "center", padding: "72px 24px" }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.4 }}>
-              {records.length === 0 ? "📋" : "🔍"}
+              {uniqueRecords.length === 0 ? "📋" : "🔍"}
             </div>
             <div style={{ fontSize: 17, color: "var(--text-secondary)", marginBottom: 6, fontWeight: 600 }}>
-              {records.length === 0 ? "No patient records yet" : `No results for "${search}"`}
+              {uniqueRecords.length === 0 ? "No patient records yet" : `No results for "${search}"`}
             </div>
             <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
-              {records.length === 0
+              {uniqueRecords.length === 0
                 ? "Complete a consultation and it will appear here"
                 : "Try a different search term"}
             </div>
@@ -330,6 +511,54 @@ export default function DashboardClient({ records, doctorEmail }: Props) {
                           No prescriptions recorded for this consultation.
                         </p>
                       )}
+
+                      {/* ── Reprint Action Bar ─────────────── */}
+                      <div style={{
+                        display: "flex", gap: 10, marginTop: 20,
+                        paddingTop: 16,
+                        borderTop: "1px solid var(--border)",
+                        flexWrap: "wrap",
+                      }}>
+                        <button
+                          id={`reprint-report-${record.id}`}
+                          onClick={() => reprintReport(record)}
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 6,
+                            padding: "8px 16px",
+                            background: "linear-gradient(135deg, var(--accent), var(--accent-hover))",
+                            border: "none", borderRadius: "var(--radius-md)",
+                            color: "#fff", fontSize: 13, fontWeight: 600,
+                            cursor: "pointer",
+                            boxShadow: "0 2px 10px rgba(225,29,72,0.25)",
+                            transition: "transform 0.15s, box-shadow 0.15s",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 4px 16px rgba(225,29,72,0.35)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 2px 10px rgba(225,29,72,0.25)"; }}
+                        >
+                          📄 Reprint Full Report
+                        </button>
+
+                        {prescriptions.length > 0 && (
+                          <button
+                            id={`reprint-rx-${record.id}`}
+                            onClick={() => reprintPrescription(record)}
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: 6,
+                              padding: "8px 16px",
+                              background: "var(--bg-elevated)",
+                              border: "1px solid var(--border-strong)",
+                              borderRadius: "var(--radius-md)",
+                              color: "var(--text-primary)", fontSize: 13, fontWeight: 600,
+                              cursor: "pointer",
+                              transition: "background 0.15s, border-color 0.15s",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--bg-card)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-elevated)"; }}
+                          >
+                            💊 Reprint Prescription
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
