@@ -917,7 +917,7 @@ body {
 .loading-dots__dot:nth-child(3) { animation-delay: 0.4s; }
 
 /* ── Prescription print target ─────────────────────────────── */
-#prescription-printable { display: none; }
+#prescription-printable { display: block; }
 
 /* ── Print ─────────────────────────────────────────────────── */
 @media print {

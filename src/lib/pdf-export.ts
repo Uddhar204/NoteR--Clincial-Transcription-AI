@@ -3,7 +3,7 @@
 
 import type { GeneratedReport } from "@/lib/llm-client";
 
-export function exportToPDF(report: GeneratedReport, patientName?: string): void {
+export function exportToPDF(report: GeneratedReport, patientName?: string, patientAge?: string, patientGender?: string): void {
   const date = new Date().toLocaleDateString("en-IN", {
     year: "numeric",
     month: "long",
@@ -199,6 +199,7 @@ export function exportToPDF(report: GeneratedReport, patientName?: string): void
     <div class="header-right">
       <strong>Clinical Report</strong><br/>
       Patient: ${patientName ?? "Current Patient"}<br/>
+      Age: ${patientAge ? patientAge + " yrs" : "—"} &nbsp;|&nbsp; Gender: ${patientGender || "—"}<br/>
       Date: ${date}<br/>
       Generated: ${new Date().toLocaleTimeString("en-IN")}
     </div>
@@ -268,7 +269,7 @@ export function exportToPDF(report: GeneratedReport, patientName?: string): void
   printWindow.document.close();
 }
 
-export function printPrescription(report: GeneratedReport): void {
+export function printPrescription(report: GeneratedReport, patientName?: string, patientAge?: string, patientGender?: string): void {
   const date = new Date().toLocaleDateString("en-IN");
 
   const prescriptionRows = report.prescriptions
@@ -314,7 +315,9 @@ export function printPrescription(report: GeneratedReport): void {
     <p>AI Clinical Copilot — Cardiology</p>
   </div>
   <div class="meta">
-    <span><strong>Patient:</strong> [Patient Name]</span>
+    <span><strong>Patient:</strong> ${patientName || "Unknown Patient"}</span>
+    <span><strong>Age:</strong> ${patientAge ? patientAge + " yrs" : "—"}</span>
+    <span><strong>Gender:</strong> ${patientGender || "—"}</span>
     <span><strong>Date:</strong> ${date}</span>
   </div>
   <div class="rx-symbol">℞</div>

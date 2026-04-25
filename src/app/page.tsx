@@ -31,6 +31,8 @@ interface TranscriptEntry {
 export default function HomePage() {
   const [status, setStatus] = useState<ConsultationStatus>("idle");
   const [patientName, setPatientName] = useState("");
+  const [patientAge, setPatientAge] = useState("");
+  const [patientGender, setPatientGender] = useState("");
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([]);
   const [keywords, setKeywords] = useState<Map<string, DetectedKeyword>>(new Map());
   const [report, setReport] = useState<GeneratedReport | null>(null);
@@ -191,31 +193,21 @@ export default function HomePage() {
         endConsultation();
       });
 
+      // Mute the assistant's audio output as soon as the call connects
+      vapi.on("call-start", () => {
+        vapi.send({ type: "control", control: "mute-assistant" });
+      });
+
       vapi.on("error", (error: unknown) => {
         console.error("Vapi error:", error);
         setStatus("idle");
         alert("Vapi encountered an error. Check console for details.");
       });
 
-      // Start the Vapi call — configure as a passive listener
-      await vapi.start({
-        model: {
-          provider: "openai",
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a silent medical transcription assistant. Your ONLY job is to listen. Do NOT respond, do NOT speak, do NOT add commentary. Just stay completely silent. The user will speak and you should not reply at all. Say nothing.",
-            },
-          ],
-        },
-        transcriber: {
-          provider: "deepgram",
-          model: "nova-2",
-          language: "multi",
-        },
-      });
+      // Start the Vapi call using the pre-configured NOTER assistant
+      // (transcriber: nova-3, language: en, bgDenoise: off, silenceTimeout: 1800s)
+      const assistantId = "cc986c3c-d3b9-4e41-890d-67c21ac57379";
+      await vapi.start(assistantId);
     } catch (error) {
       console.error("Failed to start Vapi:", error);
       setStatus("idle");
@@ -306,9 +298,8 @@ export default function HomePage() {
       }
 
       // ── Fire-and-forget memory store ──────────────────────────
-      // Generate a deterministic ID from patient name + timestamp to prevent
-      // duplicate storage if endConsultation fires twice.
-      const consultationId = `${(patientName.trim() || "unknown").replace(/\s+/g, "-").toLowerCase()}-${Date.now()}`;
+      // Use a proper UUID — Qdrant only accepts UUID or integer point IDs.
+      const consultationId = crypto.randomUUID();
 
       // Guard: don't store if we already saved this consultation
       if (savedConsultationIdRef.current !== consultationId) {
@@ -326,7 +317,9 @@ export default function HomePage() {
             soapNotes: JSON.stringify((data as GeneratedReport).soap),
             prescriptions: JSON.stringify((data as GeneratedReport).prescriptions),
           }),
-        }).catch(() => { /* storage is optional — ignore silently */ });
+        }).then((r) => {
+          if (!r.ok) console.error("[Memory] Store failed:", r.status);
+        }).catch((err) => console.error("[Memory] Store error:", err));
       }
     } catch (error) {
       console.error("Failed to generate report:", error);
@@ -345,6 +338,8 @@ export default function HomePage() {
   const newConsultation = () => {
     setStatus("idle");
     setPatientName("");
+    setPatientAge("");
+    setPatientGender("");
     setTranscriptEntries([]);
     transcriptEntriesRef.current = [];
     setKeywords(new Map());
@@ -366,14 +361,14 @@ export default function HomePage() {
   const handleExportPDF = async () => {
     if (!report) return;
     const { exportToPDF } = await import("@/lib/pdf-export");
-    exportToPDF(report, patientName.trim() || "Unknown Patient");
+    exportToPDF(report, patientName.trim() || "Unknown Patient", patientAge.trim(), patientGender);
   };
 
   // ── Print Prescription ──────────────────────────────────────
   const handlePrint = async () => {
     if (!report) return;
     const { printPrescription } = await import("@/lib/pdf-export");
-    printPrescription(report);
+    printPrescription(report, patientName.trim() || "Unknown Patient", patientAge.trim(), patientGender);
   };
 
   // ── Group keywords by category ──────────────────────────────
@@ -432,9 +427,15 @@ export default function HomePage() {
             disabled={
               status === "listening" ||
               status === "processing" ||
-              patientName.trim() === ""
+              patientName.trim() === "" ||
+              !patientAge || Number(patientAge) < 1 || Number(patientAge) > 150 ||
+              patientGender === ""
             }
-            title={patientName.trim() === "" ? "Enter patient name first" : "Start consultation"}
+            title={
+              patientName.trim() === "" || !patientAge || Number(patientAge) < 1 || Number(patientAge) > 150 || patientGender === ""
+                ? "Enter patient name, valid age, and gender first"
+                : "Start consultation"
+            }
             id="btn-start"
           >
             🎙️ Start Consultation
@@ -469,58 +470,154 @@ export default function HomePage() {
             <div className="idle-state__icon">🫀</div>
             <div className="idle-state__title">Ready for Consultation</div>
             <div className="idle-state__subtitle">
-              Enter the patient&apos;s name, then click &quot;Start Consultation&quot; to begin
+              Enter the patient&apos;s details, then click &quot;Start Consultation&quot; to begin
               recording. notER will transcribe, analyze, and generate structured
               clinical notes in real-time.
             </div>
-            {/* Patient name input */}
+            {/* Patient details input */}
             <div style={{
               marginTop: 24,
               width: "100%",
               maxWidth: 420,
               display: "flex",
               flexDirection: "column",
-              gap: 8,
+              gap: 14,
             }}>
-              <label
-                htmlFor="patient-name-input"
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "var(--text-secondary)",
-                  textAlign: "left",
-                }}
-              >
-                👤 Patient Name <span style={{ color: "var(--accent)" }}>*</span>
-              </label>
-              <input
-                id="patient-name-input"
-                type="text"
-                placeholder="e.g. Rahul Sharma"
-                value={patientName}
-                onChange={(e) => setPatientName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && patientName.trim()) startConsultation();
-                }}
-                autoComplete="off"
-                style={{
-                  padding: "12px 16px",
-                  background: "var(--surface)",
-                  border: "1.5px solid var(--border)",
-                  borderRadius: 10,
-                  color: "var(--text-primary)",
-                  fontSize: 15,
-                  outline: "none",
-                  width: "100%",
-                  transition: "border-color 0.2s",
-                  fontFamily: "inherit",
-                }}
-                onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
-                onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
-              />
-              {patientName.trim() === "" && (
+              {/* Patient Name */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label
+                  htmlFor="patient-name-input"
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    textAlign: "left",
+                  }}
+                >
+                  👤 Patient Name <span style={{ color: "var(--accent)" }}>*</span>
+                </label>
+                <input
+                  id="patient-name-input"
+                  type="text"
+                  placeholder="e.g. Rahul Sharma"
+                  value={patientName}
+                  onChange={(e) => setPatientName(e.target.value)}
+                  autoComplete="off"
+                  style={{
+                    padding: "12px 16px",
+                    background: "var(--surface)",
+                    border: "1.5px solid var(--border)",
+                    borderRadius: 10,
+                    color: "var(--text-primary)",
+                    fontSize: 15,
+                    outline: "none",
+                    width: "100%",
+                    transition: "border-color 0.2s",
+                    fontFamily: "inherit",
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                />
+              </div>
+              {/* Age + Gender row */}
+              <div style={{ display: "flex", gap: 12 }}>
+                {/* Patient Age */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
+                  <label
+                    htmlFor="patient-age-input"
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--text-secondary)",
+                      textAlign: "left",
+                    }}
+                  >
+                    🎂 Age <span style={{ color: "var(--accent)" }}>*</span>
+                  </label>
+                  <input
+                    id="patient-age-input"
+                    type="number"
+                    min={1}
+                    max={150}
+                    placeholder="e.g. 45"
+                    value={patientAge}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "" || (/^\d{1,3}$/.test(v) && Number(v) <= 150)) {
+                        setPatientAge(v);
+                      }
+                    }}
+                    autoComplete="off"
+                    style={{
+                      padding: "12px 16px",
+                      background: "var(--surface)",
+                      border: "1.5px solid var(--border)",
+                      borderRadius: 10,
+                      color: "var(--text-primary)",
+                      fontSize: 15,
+                      outline: "none",
+                      width: "100%",
+                      transition: "border-color 0.2s",
+                      fontFamily: "inherit",
+                      MozAppearance: "textfield",
+                    }}
+                    onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                  />
+                  {patientAge !== "" && (Number(patientAge) < 1 || Number(patientAge) > 150) && (
+                    <p style={{ fontSize: 11, color: "var(--accent)", margin: 0 }}>
+                      Age must be between 1 and 150
+                    </p>
+                  )}
+                </div>
+                {/* Patient Gender */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
+                  <label
+                    htmlFor="patient-gender-select"
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--text-secondary)",
+                      textAlign: "left",
+                    }}
+                  >
+                    ⚕️ Gender <span style={{ color: "var(--accent)" }}>*</span>
+                  </label>
+                  <select
+                    id="patient-gender-select"
+                    value={patientGender}
+                    onChange={(e) => setPatientGender(e.target.value)}
+                    style={{
+                      padding: "12px 16px",
+                      background: "var(--surface)",
+                      border: "1.5px solid var(--border)",
+                      borderRadius: 10,
+                      color: patientGender ? "var(--text-primary)" : "var(--text-tertiary)",
+                      fontSize: 15,
+                      outline: "none",
+                      width: "100%",
+                      transition: "border-color 0.2s",
+                      fontFamily: "inherit",
+                      cursor: "pointer",
+                      appearance: "none",
+                      WebkitAppearance: "none",
+                      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
+                      backgroundRepeat: "no-repeat",
+                      backgroundPosition: "right 14px center",
+                    }}
+                    onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                  >
+                    <option value="" disabled>Select</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+              </div>
+              {(patientName.trim() === "" || !patientAge || Number(patientAge) < 1 || Number(patientAge) > 150 || patientGender === "") && (
                 <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: 0 }}>
-                  Required before starting the consultation
+                  All fields are required before starting the consultation
                 </p>
               )}
             </div>
@@ -799,10 +896,13 @@ export default function HomePage() {
                       </div>
                       <div className="prescription-patient">
                         <span>
-                          <strong>Patient:</strong> [Patient Name]
+                          <strong>Patient:</strong> {patientName || "Unknown Patient"}
                         </span>
                         <span>
-                          <strong>Age/Sex:</strong> —
+                          <strong>Age:</strong> {patientAge ? `${patientAge} yrs` : "—"}
+                        </span>
+                        <span>
+                          <strong>Gender:</strong> {patientGender || "—"}
                         </span>
                       </div>
                       <div className="prescription-rx">℞</div>
