@@ -97,7 +97,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
                 required
-                placeholder="doctor@hospital.com"
+                placeholder="Doctor@gmail.com"
                 defaultValue={process.env.NEXT_PUBLIC_DEFAULT_EMAIL ?? ""}
                 style={{
                   width: "100%", padding: "12px 16px",
@@ -166,7 +166,7 @@ export default function LoginPage() {
 
         {/* Hint */}
         <p style={{ textAlign: "center", color: "#374151", fontSize: "12px", marginTop: "20px" }}>
-          Default: <span style={{ color: "#6b7280" }}>doctor@hospital.com / notER@2024</span>
+          Default: <span style={{ color: "#6b7280" }}>Doctor@gmail.com / doctor123</span>
         </p>
       </div>
     </div>

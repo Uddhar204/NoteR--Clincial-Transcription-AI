@@ -16,8 +16,8 @@ export async function loginAction(
   const password = formData.get("password")?.toString() ?? "";
 
   // Validate against env credentials
-  const validEmail = (process.env.DOCTOR_EMAIL ?? "").toLowerCase();
-  const validPassword = process.env.DOCTOR_PASSWORD ?? "";
+  const validEmail = (process.env.DOCTOR_EMAIL ?? "Doctor@gmail.com").toLowerCase();
+  const validPassword = process.env.DOCTOR_PASSWORD ?? "doctor123";
 
   if (!email || !password) {
     return { error: "Email and password are required." };
